@@ -1,6 +1,6 @@
 # 2026-04-26 — initial setup
 
-First working session. Goal: stand up the infrastructure end-to-end so we can iterate on real pipeline logic next session.
+First working session. Goal: stand up the infrastructure end-to-end so iteration on real pipeline logic can begin next session.
 
 ## What was built
 
@@ -38,7 +38,7 @@ First working session. Goal: stand up the infrastructure end-to-end so we can it
 - **DNS error during `bundle init`.** The default profile in `~/.databrickscfg` pointed at a stale workspace URL. Re-auth fixed it.
 - **Terraform GPG key expired.** Databricks CLI's embedded Terraform downloader fails because HashiCorp's signing key expired. Workaround: install Terraform via `brew tap hashicorp/tap && brew install hashicorp/tap/terraform`, then `export DATABRICKS_TF_EXEC_PATH=$(which terraform)` and `DATABRICKS_TF_VERSION=1.14.9`.
 - **Catalog creation rejected blank storage location.** Free Edition's "Default Storage" path didn't auto-trigger; had to use the existing Databricks-managed external location.
-- **Workspace default credential refused custom storage.** The auto-created `simmons_demo` storage credential is path-locked to `unity-catalog-storage@dbstorage...`. Created our own access connector + credential to read from `kagglecvdataset`.
+- **Workspace default credential refused custom storage.** The auto-created `simmons_demo` storage credential is path-locked to `unity-catalog-storage@dbstorage...`. A custom access connector + credential were created to read from `kagglecvdataset`.
 
 ## What's next
 

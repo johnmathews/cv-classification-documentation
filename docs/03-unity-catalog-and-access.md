@@ -14,10 +14,10 @@ catalog
 
 Like database server → database → table in Postgres. Fully-qualified names look like `cv_classification_catalog.dev.cv_bronze`.
 
-In our workspace:
-- `cv_classification_catalog` — our catalog
+In this workspace:
+- `cv_classification_catalog` — the project catalog
   - `default` — auto-created empty schema (unused)
-  - `dev` — our working schema, holds `cv_bronze`, `cv_silver`, `cv_gold`
+  - `dev` — the working schema, holds `cv_bronze`, `cv_silver`, `cv_gold`
   - `information_schema` — auto-generated metadata
 - `system` — Databricks-managed (audit logs, billing)
 - `samples` — public read-only datasets shared via Delta Sharing
@@ -29,11 +29,11 @@ Tables managed by UC need somewhere to write Delta files. Two backends:
 - **Default Storage** — Databricks-managed Azure storage (in the locked `databricks-rg-*` RG). Free Edition uses this by default. Zero config, just works.
 - **External Storage** — your own storage account. More setup, but you control encryption keys, region, RBAC.
 
-Our catalog uses **Default Storage**: tables live in `abfss://unity-catalog-storage@dbstorage675adlzi5e24w.dfs.core.windows.net/...`. We don't manage that.
+This catalog uses **Default Storage**: tables live in `abfss://unity-catalog-storage@dbstorage675adlzi5e24w.dfs.core.windows.net/...`. That storage is managed by Databricks.
 
 ## Reading from a non-default storage account
 
-The CV PDFs live in `kagglecvdataset` (which we manage). To read them, UC needs to be told that storage account is accessible. Four objects involved:
+The CV PDFs live in `kagglecvdataset` (which is managed outside Databricks). To read them, UC needs to be told that storage account is accessible. Four objects involved:
 
 ```
 Azure Access Connector  ──>  Storage Credential  ──>  External Location  ──>  Grants

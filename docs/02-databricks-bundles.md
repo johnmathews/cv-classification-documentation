@@ -4,7 +4,7 @@ DABs are Databricks' "code-as-config" project format — a YAML-defined unit tha
 
 Think Terraform-meets-`docker-compose`, scoped to Databricks.
 
-## Why we chose DABs over notebooks
+## Why DABs were chosen over notebooks
 
 The case study brief asks for "clean, modular code." Options:
 
@@ -50,15 +50,15 @@ databricks bundle destroy -t dev        # remove deployed resources
 
 DABs can deploy two kinds of executable resources, and they're often confused:
 
-**Jobs** — imperative DAG of arbitrary tasks (Python wheels, notebooks, SQL, etc.). What we use.
+**Jobs** — imperative DAG of arbitrary tasks (Python wheels, notebooks, SQL, etc.). Used in this project.
 
 **Pipelines (DLT / Lakeflow Declarative Pipelines)** — declarative ETL. You write `@dlt.table` functions; Databricks figures out dependencies, incremental updates, schema evolution, quality checks.
 
-For our pipeline (ingest → preprocess → classify with an LLM step), **Jobs** is the right tool. DLT would shine for pure Delta-to-Delta transformations but adds complexity for the LLM step and isn't justified for a 4-hour case study.
+For this pipeline (ingest → preprocess → classify with an LLM step), **Jobs** is the right tool. DLT would shine for pure Delta-to-Delta transformations but adds complexity for the LLM step and isn't justified for a 4-hour case study.
 
 ## Environment separation
 
-Our `databricks.yml` defines two targets:
+The `databricks.yml` defines two targets:
 
 - `dev` — writes to schema `cv_classification_catalog.dev`, prefixes job names with `[dev <user>]`
 - `prod` — writes to `cv_classification_catalog.prod`, no prefix, requires explicit deploy
@@ -66,11 +66,11 @@ Our `databricks.yml` defines two targets:
 This is **schema-as-environment**: cheap and good enough for a solo project. Real production setups use:
 1. Separate workspaces (strongest)
 2. Separate catalogs
-3. Separate schemas in one catalog (what we do)
+3. Separate schemas in one catalog (what is done here)
 
 ## Stable build environment caveats
 
-Two annoyances that bit us during setup:
+Two annoyances that came up during setup:
 
 1. **HashiCorp Terraform GPG key expired**: the embedded Terraform downloader inside the Databricks CLI verifies binaries with HashiCorp's signing key. When that key expires (it has, multiple times), `bundle deploy` fails. Workaround:
    ```sh
@@ -90,7 +90,7 @@ Two annoyances that bit us during setup:
 
 ## Tables persist after `destroy`
 
-Important to remember: even if a job wrote to a table, the table is **not** a bundle resource (we didn't declare it in `resources/`). It survives `destroy`. To wipe data:
+Important to remember: even if a job wrote to a table, the table is **not** a bundle resource (it isn't declared in `resources/`). It survives `destroy`. To wipe data:
 
 ```sql
 DROP SCHEMA cv_classification_catalog.dev CASCADE;

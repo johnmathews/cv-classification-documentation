@@ -1,6 +1,6 @@
 # Azure storage setup
 
-The CV PDFs need to live somewhere Spark can read from. We picked Azure Blob Storage with hierarchical namespace enabled (i.e. ADLS Gen 2).
+The CV PDFs need to live somewhere Spark can read from. Azure Blob Storage with hierarchical namespace enabled (i.e. ADLS Gen 2) was chosen.
 
 ## Hierarchy in Azure Blob Storage
 
@@ -8,7 +8,7 @@ The CV PDFs need to live somewhere Spark can read from. We picked Azure Blob Sto
 - **Container** — a bucket inside the account, holds blobs
 - **Blob** — the individual file
 
-For our case study:
+For this case study:
 - Storage account: **`kagglecvdataset`**
 - Resource group: **`simmons-demo`** (NOT `databricks-rg-*` — that's the locked Databricks-managed RG)
 - Container: **`kaggle-cv-dataset`**
@@ -27,7 +27,7 @@ Spark reads via SDK, so **Blob** is the right choice.
 
 ## ADLS Gen 2 (hierarchical namespace)
 
-When creating a storage account, we enabled **Hierarchical namespace**. This upgrades Blob Storage to ADLS Gen 2:
+When the storage account is created, **Hierarchical namespace** must be enabled. This upgrades Blob Storage to ADLS Gen 2:
 - Real directories instead of pretend ones (paths like `/folder/sub/file.pdf` are first-class)
 - Faster listing of large prefixes
 - Atomic rename
@@ -36,7 +36,7 @@ When creating a storage account, we enabled **Hierarchical namespace**. This upg
 
 ## Redundancy choice: LRS
 
-Picked **Locally-redundant storage** (LRS) — three copies in one datacenter.
+**Locally-redundant storage** (LRS) was selected — three copies in one datacenter.
 
 Rationale: the dataset is reproducible from Kaggle. Paying for geo-redundancy on disposable data is wasted money. Reserve GRS/GZRS for data you can't recreate.
 
@@ -49,7 +49,7 @@ Rationale: the dataset is reproducible from Kaggle. Paying for geo-redundancy on
 
 ## Region: West Europe
 
-Must match the Databricks workspace region. Cross-region reads cost egress and add latency. We chose West Europe for both.
+Must match the Databricks workspace region. Cross-region reads cost egress and add latency. West Europe was chosen for both.
 
 ## Block size during upload
 
@@ -67,7 +67,7 @@ The access is denied because of the deny assignment with name
 'System deny assignment created by Azure Databricks ...'
 ```
 
-So we created `kagglecvdataset` in the unrelated `simmons-demo` RG. Rule of thumb: any RG named `databricks-rg-*` is off-limits.
+So `kagglecvdataset` was created in the unrelated `simmons-demo` RG. Rule of thumb: any RG named `databricks-rg-*` is off-limits.
 
 ## Uploading the dataset
 
