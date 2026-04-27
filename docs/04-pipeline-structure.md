@@ -56,7 +56,7 @@ Considered, rejected. See [`02-databricks-bundles.md`](./02-databricks-bundles.m
 |---|---|---|
 | Ingest | Real — recursive `binaryFile` read of PDFs from `abfss://kaggle-cv-dataset@kagglecvdataset.dfs.core.windows.net/`, sha256 dedup, write as Delta | 2,484 unique rows |
 | Preprocess | Real — `pypdf`-backed UDF extracts text page by page, whitespace normalized, error-flagged on extraction failure | 2,484 rows, 0 errors |
-| Classify | Stub — every row labelled `"0-2"`. LLM integration pending. | 2,484 rows |
+| Classify | Real — `ai_query()` against `databricks-meta-llama-3-3-70b-instruct` with structured JSON output (bracket + confidence) | 2,484 rows |
 
 ### Bronze schema (`cv_bronze`)
 
@@ -82,4 +82,18 @@ Failed extractions are written with `text` starting `__EXTRACTION_ERROR__:` so t
 
 ### Gold schema (`cv_gold`)
 
-Currently silver + a constant `experience_bracket = "0-2"` column. To be replaced with a real LLM call returning one of `[0-2, 3-5, 5-7, 7-10, 10+]` plus a confidence column.
+Silver columns plus:
+
+| Column | Type | Source |
+|---|---|---|
+| `experience_bracket` | string | LLM choice from `[0-2, 3-5, 5-7, 7-10, 10+]`; NULL for extraction-error rows |
+| `llm_confidence` | double | model self-rated confidence in `[0, 1]`; NULL for extraction-error rows |
+
+## Classification details
+
+- **Model:** `databricks-meta-llama-3-3-70b-instruct` (Foundation Model API, pay-per-token, no API key)
+- **Invocation:** `ai_query()` SQL function called from PySpark via `expr()`
+- **Structured output:** the `responseFormat` argument pins a JSON schema with an `enum` of valid brackets, so the model cannot return a free-form label
+- **Prompt:** asks for years of *paid* working experience (excluding education and projects unless no work history is present); the resume text is truncated to 6,000 chars to bound input cost
+- **Error rows:** rows whose `text` starts with `__EXTRACTION_ERROR__` are not sent to the LLM; their `experience_bracket` and `llm_confidence` are NULL
+- **JSON parsing:** `get_json_object` extracts the two fields, so no Python UDF is needed in the LLM path
