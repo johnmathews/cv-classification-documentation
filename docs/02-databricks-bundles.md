@@ -46,6 +46,28 @@ databricks bundle run -t dev <job>      # execute the job
 databricks bundle destroy -t dev        # remove deployed resources
 ```
 
+## Job parameters
+
+`cv_pipeline.job.yml` exposes three job-level parameters that flow through to the wheel tasks via `{{job.parameters.<name>}}` substitution:
+
+| Parameter | Default | Used by | Purpose |
+|---|---|---|---|
+| `catalog` | `${var.catalog}` | all tasks | Unity Catalog catalog name |
+| `schema` | `${var.schema}` | all tasks | Schema within the catalog |
+| `limit` | `"0"` | classify only | Cap on rows sent to the LLM (`0` = no cap) |
+
+Override at run time without redeploying:
+
+```sh
+# full run
+databricks bundle run cv_pipeline -t dev
+
+# cheap classify smoke test (50 rows hit the LLM)
+databricks bundle run cv_pipeline -t dev --params limit=50
+```
+
+The `limit` knob exists because `ai_query` is pay-per-token and an unscoped run touches all 2,484 rows; capping the first run makes the cost / latency profile observable before committing to the full pass.
+
 ## Jobs vs Pipelines
 
 DABs can deploy two kinds of executable resources, and they're often confused:
