@@ -30,3 +30,26 @@ Kaggle resume dataset: https://www.kaggle.com/datasets/snehaanbhawal/resume-data
 - Clean, modular code (75% of effort)
 - Brief report covering methodology, findings, challenges (25% of effort)
 - Private GitHub repo with Aleksandrs.Krivickis@simmons-simmons.com as collaborator
+
+## Repo layout
+
+Two repos. The outer `case-study/` (this directory) holds the brief, docs, journal, and `report.md`. The inner `cv_classification/` is a separate git repo containing the actual Databricks Asset Bundle project — `pyproject.toml`, `uv.lock`, `databricks.yml`, `src/`, `tests/`, `resources/`.
+
+- `docs/` — architecture and design notes (Azure storage, bundles, Unity Catalog, pipeline structure). Start with `docs/04-pipeline-structure.md` for the medallion layout and current pipeline state.
+- `journal/` — dated decision log (`yymmdd-name.md`).
+- `report.md` — deliverable report.
+
+## Useful commands
+
+Run from inside `cv_classification/`:
+
+- `uv sync --dev` — install deps
+- `uv run pytest` — run tests
+- `databricks bundle deploy --target dev` — deploy bundle
+- `databricks bundle run` — run the pipeline job
+
+## Conventions
+
+- Medallion tables: `cv_bronze` → `cv_silver` → `cv_gold` in `cv_classification_catalog.dev.*`.
+- Pipeline entry points (`ingest`, `preprocess`, `classify`) are wired as console scripts in `cv_classification/pyproject.toml` and chained as tasks in `resources/cv_pipeline.job.yml`.
+- Each stage parses `--catalog` / `--schema` via `common.parse_args`, then reads upstream / writes downstream.
