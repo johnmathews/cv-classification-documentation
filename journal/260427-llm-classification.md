@@ -32,7 +32,38 @@ The schema also includes `confidence` — useful as a soft signal for "the resum
 
 Only two things, both trivial: the prompt builder (truncation logic) and the JSON-schema spec (constants well-formed). The Spark / `ai_query` path can't be exercised without a workspace, so the test suite stays small (3 new tests, 7 total).
 
+## A `--limit` smoke-test knob
+
+`ai_query` is pay-per-token, so a first run that touches all 2,484 rows is risky for both cost and latency. A `--limit` CLI flag (default `0` = no cap) was added to `classify.py`, plumbed through a new `limit` job-level parameter in `cv_pipeline.job.yml`, and surfaced via the `{{job.parameters.limit}}` substitution syntax. That way the smoke-test is one CLI flag away without redeploying:
+
+```sh
+databricks bundle run cv_pipeline -t dev --params limit=50
+```
+
+Catalog/schema were switched to the same job-parameter indirection at the same time for consistency — previously they were substituted at deploy time only.
+
+## Progress logging and a UDF observability lesson
+
+The first end-to-end run on the cluster surfaced two related problems:
+
+1. **No visible progress.** The original scripts called `print()` exactly once per stage, after every Spark action had completed. From outside, a 13-minute `preprocess` looked indistinguishable from a hung job. A small `log()` helper was added to `common.py` (timestamp + `flush=True`) and used at every meaningful checkpoint — start, before each Spark action, after each write — so the Workflows UI Output tab now updates in near-real-time.
+2. **Hidden double work.** The cancelled run's task timeline showed `silver.write` taking ~7 min and a follow-up `silver.filter(...).count()` taking another **~6 min**. The cause: the original code re-used the lazy `silver` DataFrame (which still contained the `pypdf` UDF in its query plan) for the post-write counts, so Spark re-ran the entire UDF instead of reading from the materialized Delta table. Fixed by introducing `saved = spark.table("cv_silver")` and `saved = spark.table("cv_gold")` for any post-write counting in both `preprocess.py` and `classify.py`. The next run dropped from 13m 21s to **7m 25s** preprocess.
+
+This drove a side discussion about why Python UDFs are expensive (JVM↔Python serialization, no Catalyst optimization, no codegen, opaque to the optimizer) and confirmed we want `ai_query` (a SQL function, JVM-native) rather than a Python-side LLM call wrapped in a UDF. The `pypdf` UDF in preprocess is the only unavoidable one in the pipeline and is now only run once per row.
+
+## End-to-end smoke run timings
+
+After the fixes, with `--params limit=50`:
+
+| Stage | Wall time | Notes |
+|---|---|---|
+| ingest | 1m 9s | 2,484 PDFs scanned + sha256 dedup |
+| preprocess | 7m 25s | pypdf UDF on 2,484 rows, no second pass |
+| classify | 53.8s | 50 LLM calls via `ai_query`; `gold.write` itself is 17.5s |
+
+Linear extrapolation suggests a full classify pass costs ~14 min; with `ai_query`'s internal batching, more like 10–15 min, so a full pipeline run is ~20–25 min wall time.
+
 ## What is not done
 
-- The actual classify run on the full 2,484-row dataset has not been executed; ai_query rate limits or token budgets may force a `LIMIT` for first runs.
+- The actual classify run on the full 2,484-row dataset has not been executed.
 - The report (25% of the deliverable per the brief) has not been started.
