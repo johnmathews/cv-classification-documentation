@@ -67,11 +67,13 @@ Considered, rejected. See [`02-databricks-bundles.md`](./02-databricks-bundles.m
 | `length` | long | `binaryFile` reader |
 | `content` | binary | `binaryFile` reader |
 | `sha256` | string | computed via `sha2(content, 256)` |
+| `category` | string | parent-directory name parsed from `path` (e.g. `accountant`, `arts`); lowercase |
 
 ### Silver schema (`cv_silver`)
 
 | Column | Type | Source |
 |---|---|---|
+| `category` | string | from bronze |
 | `sha256` | string | from bronze |
 | `path` | string | from bronze |
 | `text` | string | extracted text, whitespace-normalized |
