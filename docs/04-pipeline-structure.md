@@ -50,10 +50,36 @@ Each module is a thin shell:
 
 Considered, rejected. See [`02-databricks-bundles.md`](./02-databricks-bundles.md). Short version: LLM step doesn't fit DLT's declarative model, and the dataset is small enough that streaming/incremental aren't valuable.
 
-## Current state: stubs
+## Current state
 
-The first deploy proved the loop works end-to-end (deploy → wheel → cluster → tables). Real logic for each stage is the next pass:
+| Stage | Implementation | Output count |
+|---|---|---|
+| Ingest | Real — recursive `binaryFile` read of PDFs from `abfss://kaggle-cv-dataset@kagglecvdataset.dfs.core.windows.net/`, sha256 dedup, write as Delta | 2,484 unique rows |
+| Preprocess | Real — `pypdf`-backed UDF extracts text page by page, whitespace normalized, error-flagged on extraction failure | 2,484 rows, 0 errors |
+| Classify | Stub — every row labelled `"0-2"`. LLM integration pending. | 2,484 rows |
 
-- **Ingest** — read PDFs from `abfss://kaggle-cv-dataset@kagglecvdataset.dfs.core.windows.net/`, dedupe by sha256, store as Delta with binary content
-- **Preprocess** — extract text per-PDF (PyMuPDF or pypdf), strip headers/footers, normalize whitespace
-- **Classify** — call an LLM per row, parse to one of `[0-2, 3-5, 5-7, 7-10, 10+]`, capture confidence
+### Bronze schema (`cv_bronze`)
+
+| Column | Type | Source |
+|---|---|---|
+| `path` | string | `binaryFile` reader |
+| `modificationTime` | timestamp | `binaryFile` reader |
+| `length` | long | `binaryFile` reader |
+| `content` | binary | `binaryFile` reader |
+| `sha256` | string | computed via `sha2(content, 256)` |
+
+### Silver schema (`cv_silver`)
+
+| Column | Type | Source |
+|---|---|---|
+| `sha256` | string | from bronze |
+| `path` | string | from bronze |
+| `text` | string | extracted text, whitespace-normalized |
+| `num_pages` | int | from `pypdf` |
+| `text_length` | int | computed |
+
+Failed extractions are written with `text` starting `__EXTRACTION_ERROR__:` so they can be filtered downstream.
+
+### Gold schema (`cv_gold`)
+
+Currently silver + a constant `experience_bracket = "0-2"` column. To be replaced with a real LLM call returning one of `[0-2, 3-5, 5-7, 7-10, 10+]` plus a confidence column.
