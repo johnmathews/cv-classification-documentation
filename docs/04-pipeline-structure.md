@@ -94,6 +94,6 @@ Silver columns plus:
 - **Model:** `databricks-meta-llama-3-3-70b-instruct` (Foundation Model API, pay-per-token, no API key)
 - **Invocation:** `ai_query()` SQL function called from PySpark via `expr()`
 - **Structured output:** the `responseFormat` argument pins a JSON schema with an `enum` of valid brackets, so the model cannot return a free-form label
-- **Prompt:** asks for years of *paid* working experience (excluding education and projects unless no work history is present); the resume text is truncated to 6,000 chars to bound input cost
+- **Prompt:** asks for years of *paid* working experience (excluding education and projects unless no work history is present); the resume text is truncated to 10,000 chars to bound input cost
 - **Error rows:** rows whose `text` starts with `__EXTRACTION_ERROR__` are not sent to the LLM; their `experience_bracket` and `llm_confidence` are NULL
 - **JSON parsing:** `get_json_object` extracts the two fields, so no Python UDF is needed in the LLM path
