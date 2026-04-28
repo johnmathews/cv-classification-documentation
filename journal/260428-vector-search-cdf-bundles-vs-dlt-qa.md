@@ -150,6 +150,33 @@ The fourth potential gap — "the report doesn't echo the PySpark mandate
 as a deliberate compliance bullet" — is folded into the new Constraints
 subsection rather than being called out separately.
 
+## report-notes.md follow-up
+
+After the report itself was reconciled against the brief, a final pass on
+`report-notes.md` (the presentation-talking-points companion) caught that
+the file had drifted badly from reality. It read like pre-build planning
+notes that were never updated as the work landed:
+
+- Line 26 referenced "HTML/formatting cleanup" — but the dataset is PDFs,
+  not HTML.
+- Line 28 framed "what 'prepared for embedding/retrieval/analysis' means"
+  as an open question — but chunking + embeddings + Vector Search
+  index got built and validated.
+- Line 42 listed embedding-based retrieval as a future enhancement —
+  but it exists now.
+- No mention of Mosaic AI Vector Search, the chunk/index stages, the
+  truncation-cap diagnosis, the UDF re-execution bug, the 76% senior
+  skew, the contrastive-query retrieval validation, Bundles vs DLT,
+  or CDF.
+
+Rewrote the file as eight sections mirroring the now-current report
+(What was built / Architecture & design decisions / Constraints / PySpark
+tradeoff / LLM classification / Embedding & retrieval / Headline findings
+/ Challenges / Things that would strengthen). Kept it tight — the
+talking-points doc explicitly should not duplicate the depth of
+`interview-qa.md`. The presentation narrative leans on the report's
+structure and the Q&A doc handles the deep-dive material.
+
 ## Files touched
 
 - `interview-qa.md` — three new entries (Q15, Q16, Q17). Total document is
@@ -157,6 +184,10 @@ subsection rather than being called out separately.
   specific patterns, and operational lessons.
 - `report.md` — added executive summary; added Constraints subsection
   under Methodology; added retrieval-validation paragraph to Key findings.
+- `report-notes.md` — full rewrite to mirror the current report and reflect
+  what actually got built. The original file had stale references (HTML
+  cleanup, "embedding-based retrieval as a future enhancement") and was
+  missing all five-stage / Vector Search / contrastive-validation material.
 - `~/.claude/projects/-Users-john-projects-jobs-simmons-and-simmons-case-study/memory/MEMORY.md` —
   one-line index correction so the pipeline-state pointer reflects the
   current "all five stages real, end-to-end validated" reality rather than
