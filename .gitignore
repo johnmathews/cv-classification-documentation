@@ -1,2 +1,10 @@
 cv_classification/
 .DS_Store
+
+# secrets — defence-in-depth on a docs-only repo
+.env
+.env.local
+*.key
+*.pem
+credentials.json
+*.secret

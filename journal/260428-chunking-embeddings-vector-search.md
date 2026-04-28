@@ -216,3 +216,39 @@ narrow score range on the data-engineer query was ambiguous.
 The "Additional Information" / personal-trivia sections of CVs surface for
 the unicorns query — sensible, since those chunks are the parts of the
 corpus least connected to any concrete professional concept.
+
+## Test-gating via the bundle's build artifact
+
+Wired pytest into the bundle's build step in `databricks.yml`:
+
+```yaml
+artifacts:
+  python_artifact:
+    type: whl
+    build: uv run pytest && uv build --wheel
+```
+
+`databricks bundle deploy` runs that command verbatim, so a red test fails
+the build, which means the wheel never uploads, which means the deploy
+aborts. Verified by deliberately breaking a test, redeploying, observing the
+failure at "Building python_artifact…". Zero new infrastructure (no GitHub
+Actions, no pre-commit hook), one line of YAML, and every deploy is now
+gated on a green test suite. Pattern generalises to ruff / mypy / any other
+pre-build check.
+
+The Databricks CLI suppresses subcommand stdout by default, so `--debug`
+is the way to surface pytest output during a deploy. The definitive proof
+that gating works is breaking a test on purpose, not reading deploy logs.
+
+## Wrap-up housekeeping
+
+- Removed unused `PRIMARY_KEY_COLS` constant in `vector_index.py` (leftover
+  from a draft that considered a composite PK).
+- `ruff check` clean across `src/` and `tests/`. Coverage at 59% — the
+  pure-Python `_underscore` helpers are 100% covered; `main()` functions
+  intentionally aren't, since they require a Databricks runtime to test
+  meaningfully and are validated end-to-end by `bundle deploy`.
+- Outer repo `.gitignore` extended with standard secret patterns
+  (`.env`, `*.key`, `*.pem`, etc.) as defence-in-depth, even though it's a
+  docs-only repo.
+- New Q14 in `interview-qa.md` distils the test-gating pattern.

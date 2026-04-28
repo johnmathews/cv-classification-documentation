@@ -397,3 +397,31 @@ Three things, in roughly increasing order of usefulness as lessons.
 **`create_delta_sync_index_and_wait` is the wrong abstraction when you want a deadline.** It's a synchronous SDK call that blocks until the index is fully provisioned. We added a 30-minute timeout to our polling loop expecting to bound the total wait — but the polling loop is on the *other* side of the `_and_wait` call, so the timeout never had a chance to fire. The fix is to switch to the non-waiting `create_delta_sync_index` and let the polling loop own the whole provisioning + sync window with one observable deadline. Generalisable principle: when an SDK offers `*_and_wait` and `*` variants, prefer the non-waiting one whenever you want explicit control over the wait.
 
 **Score-format precision can hide whether retrieval is actually working.** Mosaic AI Vector Search returns scores from a distance-style metric, not the [0, 1] cosine convention. For our corpus the meaningful score range was `[0.0017, 0.0025]` — the `f"{score:.3f}"` print format I'd written rounded everything to `0.002`, making it look like every result had identical similarity. Two follow-up checks resolved the ambiguity: (a) bumping the formatter to `:.6f` revealed real variation in the 4th–6th decimal place, and (b) a contrastive nonsense query ("unicorns in a tree?") returned a *different* tight-but-lower band (`0.0017` vs `0.0024`), with totally different chunks. Tight score ranges on a homogeneous corpus aren't a bug; the formatter was. Generalisable principle: when validating a similarity-search surface, run a contrastive query early — the *delta* between an in-domain and out-of-domain query is much more informative than absolute score values.
+
+---
+
+## Q14 — How are tests gated against deploys without setting up CI?
+
+The Databricks Asset Bundle declares its build step in `databricks.yml`:
+
+```yaml
+artifacts:
+  python_artifact:
+    type: whl
+    build: uv run pytest && uv build --wheel
+```
+
+The `&&` chains pytest before the wheel build. `databricks bundle deploy` invokes that command end-to-end, so a red test fails the build, which means the wheel never uploads, which means the deploy aborts. Zero new infrastructure — no GitHub Actions, no pre-commit hook, no separate CI runner — and yet every deploy is gated on a green test suite.
+
+**Why this works specifically here.** The whole pipeline is built on one wheel artefact, declared as a single `artifacts` entry. The Databricks CLI runs the `build:` shell command verbatim, so anything you can express on a shell line becomes a pre-build check. The pattern generalises beyond pytest:
+
+- `uv run ruff check src/ && uv build --wheel` — lint gate
+- `uv run mypy src/ && uv build --wheel` — type-check gate
+- `uv run pytest && uv run ruff check src/ && uv build --wheel` — chain multiple
+
+**How to verify it's actually running.** The Databricks CLI suppresses subcommand stdout by default, so a successful `bundle deploy` doesn't visibly show pytest output. Two ways to confirm:
+
+1. `databricks bundle deploy --debug` — surfaces subprocess output including pytest's pass count
+2. Deliberately break a test, redeploy, observe the deploy fail at "Building python_artifact…" (the definitive proof — done once during this case study)
+
+**Why it isn't a complete CI replacement.** It only fires on `bundle deploy`, not on every commit. A teammate could merge code with broken tests if they don't deploy. For a single-author case study this is fine; for a team project, a GitHub Actions workflow on push to `main` is the next step up. The bundle-stage gate complements that — it's a last-mile guard, not a substitute for CI.
