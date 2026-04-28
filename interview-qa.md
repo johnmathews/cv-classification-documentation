@@ -346,3 +346,42 @@ Step by step on the call `parse_args("Ingest CVs from blob storage into cv_bronz
   Databricks substitutes the job parameters and passes that array as `sys.argv[1:]` when the wheel's entry-point function is invoked.
 
 **Why centralise the parsing.** All three stages need exactly the same `--catalog` / `--schema` interface; only `classify` additionally cares about `--limit` (which defaults to 0 and is a no-op everywhere else). Putting the parser in `common.py` keeps the three stage modules free of argparse boilerplate and guarantees the flag names stay in sync.
+
+---
+
+## Q12 — Why Delta Sync Index with self-managed embeddings, and why no choice in the matter on Free Edition?
+
+**Mosaic AI Vector Search has two index types:**
+
+- **Delta Sync Index** — index points at a Unity Catalog Delta table. Databricks reads from the table and keeps the index synchronised with it. Sync mode is either *triggered* (manual / job-driven) or *continuous* (driven by the Delta change feed).
+- **Direct Vector Access Index** — index is populated by REST/SDK calls; you push vectors into it. No Delta table involved.
+
+**On Databricks Free Edition, Direct Vector Access is explicitly not supported.** Free Edition allows exactly one Vector Search endpoint, capped at one Vector Search unit, and the only available index type is Delta Sync. So the design choice is made for us — the source of truth has to be a Delta table, and the index syncs from it.
+
+This happens to align with the medallion architecture already in place: `cv_silver_chunks` becomes the Delta source, the index references it, and there is no out-of-band data path to manage.
+
+**Within Delta Sync, the second axis is who computes the embeddings:**
+
+- **Managed embeddings** — point the index at a *text* column. Databricks calls a Foundation Model API embedding endpoint internally and stores the resulting vectors inside the index (you never see them).
+- **Self-managed embeddings** — you compute the embeddings yourself into an `array<float>` column on the Delta table; the index just consumes that column.
+
+**Self-managed was picked for four reasons:**
+
+1. **Inspectable.** Vectors live in `cv_silver_chunks.embedding`, so similarity, dimensionality, and per-row cost are queryable in SQL. Managed embeddings are opaque inside the index.
+2. **Lineage stays in the medallion story.** The embedding step is just another `ai_query()` call into a Delta column — same mechanism as classification, no hidden index-side embedder.
+3. **Reproducibility.** Embeddings are tied to a specific model version. Migrating off Vector Search (or rebuilding the index) doesn't require re-embedding 12k rows.
+4. **Experiment ergonomics.** Tweaking chunking parameters means recomputing one column, then resyncing the index. Managed embeddings would re-embed inside the index on every change.
+
+**Sync mode: triggered, not continuous.** The pipeline is batch — CVs are processed in a single job run, not streamed in over time. Triggered sync is cheaper and fits the DAG: the chunk task writes the table, then explicitly calls `index.sync()`. Continuous sync is for use cases where the source table changes constantly (e.g. user-generated content) and the index needs to track those changes in near-real-time.
+
+**Free Edition limits worth flagging:**
+
+| | Free Edition |
+|---|---|
+| Vector Search endpoints per workspace | 1 |
+| Vector Search units per endpoint | 1 |
+| Direct Vector Access indexes | not supported |
+| Foundation Model API mode | pay-per-token only (no provisioned throughput, no GPU endpoints) |
+| Compute | serverless only |
+
+For 2,484 CVs × ~5 chunks ≈ 12,400 vectors, one unit is well within capacity (a unit handles millions of vectors). The single-endpoint cap means dev and prod can't run side-by-side on the same workspace; for a case study that's a non-issue.

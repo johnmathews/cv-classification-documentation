@@ -50,6 +50,6 @@ Run from inside `cv_classification/`:
 
 ## Conventions
 
-- Medallion tables: `cv_bronze` → `cv_silver` → `cv_gold` in `cv_classification_catalog.dev.*`.
-- Pipeline entry points (`ingest`, `preprocess`, `classify`) are wired as console scripts in `cv_classification/pyproject.toml` and chained as tasks in `resources/cv_pipeline.job.yml`.
+- Medallion tables: `cv_bronze` → `cv_silver` → `cv_silver_chunks` → `cv_gold` in `cv_classification_catalog.dev.*`. Vector Search index `cv_silver_chunks_index` is layered on top of `cv_silver_chunks`.
+- Pipeline entry points (`ingest`, `preprocess`, `chunk`, `index`, `classify`) are wired as console scripts in `cv_classification/pyproject.toml` and chained as tasks in `resources/cv_pipeline.job.yml`. `chunk` and `classify` both fan out from `preprocess` and run in parallel; `index` runs after `chunk`. A separate `retrieve` entry point is a hand-runnable retrieval demo and is not part of the DAG.
 - Each stage parses `--catalog` / `--schema` via `common.parse_args`, then reads upstream / writes downstream.
