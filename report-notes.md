@@ -2,13 +2,19 @@
 
 Talking points for walking through the deliverable, ordered roughly to match `report.md`. Not a duplicate of `interview-qa.md` — the Q&A doc has the deep-dive material, this file is the surface-level narrative.
 
+## Opening pitch (~30 seconds)
+
+- A five-stage Databricks pipeline — `ingest → preprocess`, then `chunk` and `classify` fan out in parallel with `index` after `chunk` — processes 2,484 unique CVs end-to-end on Free Edition serverless compute in **23m 34s**.
+- **Headline challenge:** building a production-pattern pipeline (medallion tables, Vector Search, Foundation Model API, Asset Bundles) within Databricks Free Edition's constraint set — one Vector Search endpoint, Delta Sync only, pay-per-token Foundation Models, serverless-only compute.
+- **Headline finding:** the corpus is heavily senior-skewed — 76% of resumes land in 10+, with model confidence on 10+ averaging 0.95 against 0.77–0.83 elsewhere; that gap supports a genuine corpus property, not a hedging-model artefact.
+
 ## What was built
 
-- Five-stage Databricks pipeline: `ingest → preprocess → chunk → index → classify`.
-- Chained as dependent tasks in a single Databricks Job, deployed via Asset Bundles. One wheel artefact, five entry points (`ingest:main`, `preprocess:main`, `chunk:main`, `vector_index:main`, `classify:main`).
+- Five-stage Databricks pipeline. `ingest → preprocess` runs serially; `chunk` and `classify` then fan out from `preprocess` and run in parallel, with `index` sequenced after `chunk`.
+- Wired as a DAG of dependent tasks in a single Databricks Job, deployed via Asset Bundles. One wheel artefact, five entry points (`ingest:main`, `preprocess:main`, `chunk:main`, `vector_index:main`, `classify:main`).
 - Stage outputs follow medallion-architecture naming: `cv_bronze` → `cv_silver` → `cv_silver_chunks` → `cv_gold`, all in `cv_classification_catalog.dev.*`.
 - A Mosaic AI Vector Search index (`cv_silver_chunks_index`) is layered on top of `cv_silver_chunks` to satisfy the brief's "prepared for embedding/retrieval/analysis" requirement.
-- End-to-end wall time on serverless compute: 17m 6s for all 2,484 CVs.
+- End-to-end wall time on serverless compute: **23m 34s** — ingest 1m 14s, preprocess 6m 46s, chunk 1m 58s, index 21s, classify 15m 32s. `chunk` and `classify` fan out after `preprocess` and run in parallel, so classify (15m 32s) drives the post-fork branch on its own; `pypdf` extraction in `preprocess` is the second dominant cost.
 
 ## Architecture & design decisions
 
@@ -23,6 +29,7 @@ Talking points for walking through the deliverable, ordered roughly to match `re
 
 - **PySpark for ingestion + preprocessing** — brief-mandated for scalability. Single-node pandas would be faster at 2,484 rows; the architecture trades that overhead for "100k+ CVs scales without rewriting."
 - **Databricks Free Edition** — caps Vector Search to one endpoint × one unit, forces Delta Sync (Direct Vector Access not supported), restricts Foundation Model API to pay-per-token, all compute serverless. Several architecture decisions are downstream of this.
+- **External storage access via custom Access Connector.** The auto-created Access Connector lives in Free Edition's locked managed resource group and is unusable due to deny assignments — a second was created in an unlocked resource group and registered via the CLI rather than SQL. Worth flagging as the supporting blocker behind the headline challenge.
 - **Classification as add-on analytics, not production.** Per the brief — no retry-with-backoff, no per-row cost monitoring, no shadow-mode comparison. These would all come with productionisation.
 
 ## PySpark / Databricks tradeoff
@@ -62,7 +69,6 @@ Talking points for walking through the deliverable, ordered roughly to match `re
 - **UDF observability bug.** First end-to-end run had `silver.write` taking 7 min and a follow-up `silver.filter(...).count()` taking another 6 min — Spark silently re-ran the entire `pypdf` UDF because the post-write count used the lazy DataFrame whose query plan still contained the UDF. Fix: rebind to `spark.table("cv_silver")` for any post-write reads. Cut preprocess wall time from 13m 21s to 7m 25s. The class of bug pure-Python unit tests can't surface — only a real cluster run with a task timeline reveals it.
 - **Vector Search cold-provisioning latency.** First-time endpoint creation took ~10 min; the Delta Sync index then sat in `Provisioning resources…` for 30+ min before transitioning to Online. None of this is in the docs as typical-case latency. Subsequent runs hit the "already exists" branches and finish in seconds.
 - **Bracket ambiguity.** "Years of experience" is undefined in the brief — pinned in the prompt but a production deployment would need it nailed down per role.
-- **PySpark over-engineering at this scale.** Already mentioned above — accepted trade for the brief's scalability requirement.
 
 ## Things that would strengthen the solution (if more time)
 
