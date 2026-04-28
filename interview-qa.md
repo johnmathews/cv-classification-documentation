@@ -425,3 +425,145 @@ The `&&` chains pytest before the wheel build. `databricks bundle deploy` invoke
 2. Deliberately break a test, redeploy, observe the deploy fail at "Building python_artifact…" (the definitive proof — done once during this case study)
 
 **Why it isn't a complete CI replacement.** It only fires on `bundle deploy`, not on every commit. A teammate could merge code with broken tests if they don't deploy. For a single-author case study this is fine; for a team project, a GitHub Actions workflow on push to `main` is the next step up. The bundle-stage gate complements that — it's a last-mile guard, not a substitute for CI.
+
+---
+
+## Q15 — What actually is `cv_silver_chunks_index`, and where does Vector Search sit in the broader Mosaic AI product?
+
+`cv_silver_chunks_index` looks like a table in Catalog Explorer — it appears in Unity Catalog under `cv_classification_catalog.dev.*` alongside the Delta tables — but it isn't one. It's a **Mosaic AI Vector Search index**, a separate managed resource hosted on a Vector Search endpoint (`cv_search`). The data lives in an off-cluster HNSW (Hierarchical Navigable Small World) approximate-nearest-neighbour store managed by Databricks, not as Parquet files plus a `_delta_log/` in the project's storage account. A small managed Lakeflow pipeline runs behind the scenes to keep the index synchronised with its source Delta table — the `pipeline_id` field on the index detail page is that pipeline.
+
+### Concrete differences from a normal Delta table
+
+| | `cv_silver_chunks` (Delta) | `cv_silver_chunks_index` (Vector Search) |
+|---|---|---|
+| Storage | Parquet + Delta log in ADLS | Opaque HNSW store on a VS endpoint |
+| Query path | SQL, Spark, `spark.table(...)` | `client.get_index(...).similarity_search(...)` over HTTP |
+| Index structure | Delta data skipping, optional Z-order | HNSW for ANN + scalar metadata filters |
+| Updates | Direct writes | Sync from a *source* Delta table only |
+| Lifecycle | Independent | Tied to endpoint + source table |
+| Compute to query | Any cluster / SQL warehouse | Only the endpoint serves queries |
+
+### What is Mosaic AI
+
+"Mosaic AI" is Databricks' umbrella brand for everything AI/ML on the platform. The name comes from **MosaicML**, a startup Databricks acquired in mid-2023 for ~$1.3B; that team's pretraining / fine-tuning stack was folded into the lakehouse and the wider AI surface was rebranded. The umbrella covers the full lifecycle:
+
+| Layer | Product | What it does |
+|---|---|---|
+| Inference | Foundation Model APIs | Pay-per-token access to hosted Llama, DBRX, GTE-large, etc. — what `ai_query()` calls. |
+| | Model Serving | Custom MLflow-registered models or external APIs proxied as Databricks endpoints. |
+| | AI Gateway | Routing, rate-limiting, PII redaction, unified billing in front of multiple model providers. |
+| Retrieval | **Vector Search** | Managed vector DB integrated with Unity Catalog. |
+| | Feature Serving | Low-latency lookup of feature-store columns at inference time. |
+| Build | Agent Framework + Agent Evaluation | Build and offline-score RAG / tool-using agents. |
+| | Playground | Interactive prompt/model testing in the workspace. |
+| Train | Foundation Model Training | Continued pretraining and fine-tuning on top of the MosaicML stack. |
+| Govern / observe | MLflow 3 + Lakehouse Monitoring | Lineage, eval logs, drift, cost tracking — all written to UC tables. |
+
+The selling point isn't any one of these in isolation (Pinecone, Bedrock, OpenAI all overlap on individual capabilities) — it's that everything shares one auth surface (UC), one billing surface (DBUs), one storage surface (Delta in the customer's own object store), and one governance surface (UC permissions, lineage, audit).
+
+### Vector Search architecture in two resources
+
+- **Endpoint** — the compute layer. A serving cluster that hosts indexes and answers similarity queries. Billed in **Vector Search Units (VSUs)**; one unit handles tens of millions of vectors. Multiple indexes can share an endpoint. On Free Edition the cap is one endpoint × one unit.
+- **Index** — the data layer. An HNSW graph plus metadata, attached to one endpoint. Lives in the UC namespace as `catalog.schema.index_name`.
+
+The two index types (Delta Sync vs Direct Vector Access), the two embedding modes (managed vs self-managed), and the two sync modes (TRIGGERED vs CONTINUOUS) are covered in [Q12](#q12--why-delta-sync-index-with-self-managed-embeddings-and-why-no-choice-in-the-matter-on-free-edition).
+
+### Why it's tied to Delta + UC, not standalone
+
+- **Permissions** — the index inherits read ACLs from its source table. Whoever can `SELECT` on `cv_silver_chunks` can query `cv_silver_chunks_index`.
+- **Lineage** — appears in UC's lineage graph alongside the source.
+- **Updates** — the source table must have `delta.enableChangeDataFeed=true` plus a single-column primary key, exactly so sync can be incremental rather than full-rescan (see Q16).
+- **Canonical copy** — vectors physically live in the endpoint's HNSW store, but in self-managed mode the embeddings are also in the source Delta column. One canonical copy that can be rebuilt from.
+
+### Where it sits competitively
+
+Pinecone, Weaviate, Qdrant, pgvector, Azure AI Search all do similar work. Vector Search's distinguishing pitch is "the lakehouse never has to be left." Same auth, governance, billing, and SDK as the rest of the data platform. The trade is platform lock-in plus the Free Edition capacity caps surfaced in this case study (single endpoint, slow cold provisioning).
+
+---
+
+## Q16 — What is Change Data Feed, and where does this project use it?
+
+**Change Data Feed (CDF)** is a Delta Lake feature that records every row-level insert, update, and delete between table versions, on top of the table's normal history. When CDF is enabled, the change log can be read as a stream of rows with three extra columns:
+
+| Column | Meaning |
+|---|---|
+| `_change_type` | `insert`, `update_preimage`, `update_postimage`, or `delete` |
+| `_commit_version` | The Delta version that introduced the change |
+| `_commit_timestamp` | When that commit happened |
+
+CDF is opt-in. It's enabled per-table by setting the table property `delta.enableChangeDataFeed=true` either at create time (`CREATE TABLE … TBLPROPERTIES (...)`), on a writer (`.option("delta.enableChangeDataFeed", "true")`), or via `ALTER TABLE … SET TBLPROPERTIES`. Once on, every subsequent commit has its row-level changes materialised; readers consume them via:
+
+```python
+spark.read.format("delta") \
+     .option("readChangeFeed", "true") \
+     .option("startingVersion", N) \
+     .table("cv_silver_chunks")
+```
+
+### Where it appears in this pipeline
+
+`chunk.py` enables CDF on `cv_silver_chunks` in three places — a belt-and-braces pattern so the property is set whether the table is being created fresh or overwritten:
+
+```python
+# chunk.py:89   — on the initial write
+.option("delta.enableChangeDataFeed", "true")
+# chunk.py:115  — on the overwrite path
+.option("delta.enableChangeDataFeed", "true")
+# chunk.py:121  — defensive ALTER TABLE in case neither write set it
+spark.sql("ALTER TABLE cv_silver_chunks SET TBLPROPERTIES (delta.enableChangeDataFeed = true)")
+```
+
+The reason it's required is that **Mosaic AI Vector Search Delta Sync indexes use CDF as their sync mechanism.** When `idx.sync()` fires, the index doesn't rescan the entire source table — it reads the change feed since the last successful sync version, then upserts (or deletes) only the affected rows in the HNSW store, keyed by the primary key (`chunk_uid`). Without CDF on, the sync call fails with an explicit "source table must have Change Data Feed enabled" error.
+
+### CDF vs sync mode — orthogonal concerns
+
+A common confusion: `pipeline_type="TRIGGERED"` vs `"CONTINUOUS"` is about *when* the sync pipeline runs, while CDF is about *how* the sync pipeline computes the delta to apply. Both modes use CDF; the difference is whether sync is fired by an explicit `idx.sync()` call (TRIGGERED — what this project uses, fitting the batch DAG) or by a managed pipeline tailing the change feed in near-real-time (CONTINUOUS — for streaming workloads).
+
+### Other uses of CDF outside this project
+
+CDF generalises beyond Vector Search. Anywhere a downstream consumer needs incremental updates from a Delta table, CDF is the lakehouse-native mechanism: feeding a Kafka topic from a Delta table, materialised views in DBSQL, dbt incremental models targeting Delta, mirroring rows into an external OLTP system, or audit logs of every row change at production scale. It carries the same trade as any change-log feature: extra storage and write overhead in exchange for cheap, exact-incremental reads downstream. For a 12k-row Vector Search index the overhead is invisible; at production scale it should be enabled deliberately on the tables that need it, not blanket across the catalogue.
+
+---
+
+## Q17 — Why Databricks Asset Bundles + Jobs, not DLT (Lakeflow Declarative Pipelines)?
+
+Both are first-class Databricks resources for orchestrating data work, both can be deployed via Asset Bundles, and they are routinely confused. The split:
+
+| | **Jobs** (chosen here) | **DLT / Lakeflow Declarative Pipelines** |
+|---|---|---|
+| Programming model | Imperative DAG of arbitrary tasks (Python wheel, notebook, SQL, dbt, etc.) | Declarative — `@dlt.table` functions; Databricks infers the DAG |
+| Dependency wiring | Explicit `depends_on` in YAML | Inferred from `dlt.read("upstream_table")` references |
+| Incremental ingest | Hand-rolled (the developer chooses overwrite vs merge vs streaming) | Built-in; STREAMING tables track CDF / Auto Loader automatically |
+| Data quality | Hand-rolled (asserts, GE, dbt tests) | `@dlt.expect_or_drop` / `_or_fail` baked into the runtime |
+| Schema evolution | Hand-rolled | Managed |
+| Scheduling | Cron, file arrival, continuous | Triggered or continuous pipeline run |
+| Compute model | Any cluster, including serverless | DLT-managed pipeline cluster (separate billing line) |
+| Local testability | Pure Python; pytest works | Can't fully run `@dlt.table` outside a DLT pipeline |
+
+DLT is the cleaner shape **when the workload is pure Delta-to-Delta with quality checks and incremental updates as first-class concerns** — bronze → silver → gold using Auto Loader, evolving CSV schemas, expectation-driven dropping of bad rows, near-real-time streaming. For that use case, the declarative model genuinely earns its weight.
+
+### Why it was rejected here
+
+1. **The LLM step doesn't fit the declarative model.** `classify` calls `ai_query()` against a Foundation Model API endpoint — pay-per-token, non-deterministic, externally dependent. DLT's `@dlt.table` is a *materialisation* primitive; it expects "given upstream, produce downstream" to be a deterministic function with idempotent re-runs. Wrapping a paid LLM call in `@dlt.table` works mechanically, but every prompt tweak triggers a full re-materialisation of the dependent tables, and the runtime's incremental smarts (recompute only what changed) lose meaning when "what changed" is the prompt, not the input data.
+
+2. **Dataset size makes the streaming / incremental story irrelevant.** 2,484 PDFs ingested once; no Auto Loader, no daily increments, no schema evolution. DLT's headline features — STREAMING tables, materialised views, incremental refresh — would be carrying no weight. At 100M rows arriving daily this calculus flips entirely.
+
+3. **Iteration ergonomics.** Each pipeline stage is an entry-point function (`ingest:main`, `chunk:main`, etc.) that can be called directly from a notebook, a pytest test, or `python -m`. Hand-running one stage on the cluster while tweaking the prompt is a 10-second loop. DLT pipelines run as a unit; partial reruns are possible but coarser. For a four-hour case study with pay-per-token cost on every full pass, the imperative shape is materially cheaper to iterate.
+
+4. **Test gating.** The bundle's `artifacts.python_artifact.build` step runs `uv run pytest && uv build --wheel` (see [Q14](#q14--how-are-tests-gated-against-deploys-without-setting-up-ci)). DLT pipelines don't have an equivalent local-pytest gate — `@dlt.table` decorated functions can't be unit-tested in isolation without mocking the DLT runtime, which is brittle.
+
+5. **Free Edition compute.** DLT pipelines run on a managed pipeline cluster type that has separate Free Edition limits and slower cold-start than the serverless job clusters used here. Already running into endpoint-provisioning latency for Vector Search; adding a second class of cold-start to the workflow wasn't worth it.
+
+### What was given up
+
+- **`@dlt.expect` quality gates.** Built-in row-level expectations with drop / fail / quarantine semantics. Replaced here by lightweight log-line invariants (input/output row counts per stage, `__EXTRACTION_ERROR__` count) and the `responseFormat` JSON schema constraining `bracket` to a literal enum at the LLM step. See [Q10](#q10--does-this-project-need-data-contract-validation) on data contracts.
+- **Auto-managed dependency inference.** `cv_pipeline.job.yml` declares `depends_on` explicitly between tasks. With five stages this is trivial; at twenty-plus tables the inference would start to earn its keep.
+- **Lineage UI polish.** DLT's pipeline view renders the DAG with row counts and quality metrics per node. Jobs' Workflows UI shows tasks-in-a-DAG but doesn't graph table-level lineage in the same way (UC lineage covers it separately).
+
+### Where the decision flips
+
+If the brief had been "ingest 100k CVs/day from an SFTP drop, dedupe against the existing corpus, enforce schema contracts at every layer, expose a near-real-time gold view to recruiters" — DLT becomes the correct tool. The LLM classification would be split off into a downstream Job that consumes a clean `cv_silver` materialised view, keeping DLT's declarative rigour where it pays off and the imperative LLM step isolated from it. That hybrid (DLT for the deterministic stack, Jobs for the LLM tier) is the production shape this project would evolve into at scale.
+
+### Reference
+
+`docs/02-databricks-bundles.md` covers the full Bundles + Jobs surface — wheel artefact, job parameters, environment targets, deploy/run/destroy lifecycle, and why notebooks were rejected as the deliverable shape.

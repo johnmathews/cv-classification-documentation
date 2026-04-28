@@ -1,5 +1,9 @@
 # Document Data Engineering Case Study — Report
 
+## Executive summary
+
+A five-stage Databricks pipeline (ingest → preprocess → chunk → index → classify) runs end-to-end on Free Edition serverless compute in 17m 6s, processing 2,484 unique CVs from the Kaggle resume dataset. PySpark handles ingestion and preprocessing per the brief; classification uses Llama 3.3 70B via the Foundation Model API with a JSON-schema `responseFormat` constraining output to the five required brackets plus a confidence score. The headline finding is a heavily senior-skewed corpus — 76% of resumes land in the 10+ bracket with model confidence on that label averaging 0.95 against 0.77–0.83 elsewhere, suggesting a genuinely senior corpus rather than a hedging model. The headline challenge was a truncation cap that initially biased classifications toward underestimating experience; diagnosed and corrected by raising the cap from 6,000 to 10,000 chars after a first full run, with the before/after comparison confirming the correction was real but small in magnitude.
+
 ## Methodology
 
 The pipeline is structured into five stages — ingest, preprocess, chunk, index, classify — chained as dependent tasks in a single Databricks Job. Each stage is a separate Python entry point in one wheel artefact, deployed via Databricks Asset Bundles. Stage outputs follow medallion-architecture naming: `cv_bronze` (raw bytes plus a content hash), `cv_silver` (extracted text), `cv_silver_chunks` (per-chunk text + 1024-dim embedding), `cv_gold` (silver plus experience bracket and LLM confidence). A Mosaic AI Vector Search index is layered on top of `cv_silver_chunks` to satisfy the brief's "prepared for embedding/retrieval/analysis" requirement.
@@ -12,6 +16,12 @@ A `--limit` flag was added to the classify stage and surfaced as a job-level par
 
 - **All CVs are in English.** The Kaggle dataset is English-only, and the chosen embedding model (`databricks-gte-large-en`) is monolingual. A multilingual production setting would need `bge-m3` or a multilingual GTE variant.
 - **`pypdf` strips most layout.** Output is a single text string per CV with paragraph breaks largely intact but visual structure (columns, tables, sidebars) collapsed. Section headers (`EXPERIENCE`, `EDUCATION`, `SKILLS`) typically survive in capitals because they're emitted as caps in the source. Section-aware parsing was considered and de-scoped — heuristics on capitalised headers are brittle across the heterogeneous layouts in the corpus, and the recursive splitter already respects natural paragraph boundaries without needing the structure.
+
+### Constraints
+
+- **PySpark for ingestion and preprocessing.** Mandated by the brief for scalability. At 2,484 rows the architecture is over-engineered relative to a single-node pandas pipeline (see Challenges); the trade was deliberate so the same code scales to 100k+ documents without rewriting.
+- **Databricks Free Edition.** Caps Vector Search to one endpoint × one unit, forces Delta Sync indexes (Direct Vector Access not supported), restricts Foundation Model API access to pay-per-token (no provisioned throughput, no GPU endpoints), and limits compute to serverless. These constraints shape several of the decisions in the next section.
+- **LLM as add-on analytics, not production.** Per the brief, classification is positioned as an analytical pass rather than a productionised service. The current implementation has no retry-with-backoff on transient `ai_query` failures, no per-row cost monitoring, and no shadow-mode comparison against a prior model — all of which a production deployment would add.
 
 ## Architecture decisions
 
@@ -32,6 +42,8 @@ Only one row fell below confidence 0.6 — a CONSTRUCTION resume of 17.5 KB with
 The non-monotonic dip at 5-7 (41 rows, the smallest bracket despite a wider population window than 0-2) survived the cap extension, supporting a **bracket-boundary effect**: when torn between "around 5" and "around 7", the model appears to hop to a neighbouring bracket rather than commit to the middle.
 
 End-to-end wall time for the full pipeline on a serverless cluster was **17m 6s**, with the `pypdf` UDF in preprocess and the LLM calls in classify being the two dominant costs. Raising the truncation cap from 6,000 to 10,000 characters made no measurable difference to wall time.
+
+The retrieval surface was validated end-to-end via a contrastive-query test from a workspace notebook. The in-domain query "python data engineer with spark and aws experience" returned a top-5 band of `[0.00225, 0.00246]` with relevant engineering chunks (Spark/AWS terminology, data-engineering role descriptions). A deliberately out-of-domain control ("unicorns in a tree?") returned a *different* top-5 band of `[0.00171, 0.00174]` with a totally different set of chunks — predominantly the "Additional Information" / hobbies sections of various CVs. The delta between the two bands confirmed the embedding + ANN surface is doing real semantic work, not returning generic top-K. Vector Search returns scores on a distance-style scale rather than the [0, 1] cosine convention, so absolute values are tight; the in-domain vs out-of-domain delta is the meaningful signal.
 
 Profession is captured at ingest by parsing the parent-directory name out of `path` and propagating the resulting `category` column through silver and gold. The Kaggle layout yields **24 categories**, mostly flat at ~100–120 rows each with three smaller folders (`bpo`, `automobile`, `agriculture`). Carrying this dimension through gives downstream consumers a second slicing axis without a second pass over the data.
 
