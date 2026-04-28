@@ -385,3 +385,15 @@ This happens to align with the medallion architecture already in place: `cv_silv
 | Compute | serverless only |
 
 For 2,484 CVs × ~5 chunks ≈ 12,400 vectors, one unit is well within capacity (a unit handles millions of vectors). The single-endpoint cap means dev and prod can't run side-by-side on the same workspace; for a case study that's a non-issue.
+
+---
+
+## Q13 — What surprised you when running the chunk + index + retrieval surface end-to-end?
+
+Three things, in roughly increasing order of usefulness as lessons.
+
+**Free Edition Vector Search provisioning is much slower than the docs suggest.** First-time endpoint creation took ~10 minutes; the Delta Sync index then sat in `Provisioning resources…` with `Pipeline id: -` for 30+ minutes before transitioning to `Online`. None of this is documented anywhere as a typical-case latency — Databricks' guidance reads as if endpoints come up in single-digit minutes. The first-time hit isn't repeated on subsequent runs (idempotent re-creation hits the "already exists" branch and finishes in seconds), but the first run on a cold workspace needs to budget for it.
+
+**`create_delta_sync_index_and_wait` is the wrong abstraction when you want a deadline.** It's a synchronous SDK call that blocks until the index is fully provisioned. We added a 30-minute timeout to our polling loop expecting to bound the total wait — but the polling loop is on the *other* side of the `_and_wait` call, so the timeout never had a chance to fire. The fix is to switch to the non-waiting `create_delta_sync_index` and let the polling loop own the whole provisioning + sync window with one observable deadline. Generalisable principle: when an SDK offers `*_and_wait` and `*` variants, prefer the non-waiting one whenever you want explicit control over the wait.
+
+**Score-format precision can hide whether retrieval is actually working.** Mosaic AI Vector Search returns scores from a distance-style metric, not the [0, 1] cosine convention. For our corpus the meaningful score range was `[0.0017, 0.0025]` — the `f"{score:.3f}"` print format I'd written rounded everything to `0.002`, making it look like every result had identical similarity. Two follow-up checks resolved the ambiguity: (a) bumping the formatter to `:.6f` revealed real variation in the 4th–6th decimal place, and (b) a contrastive nonsense query ("unicorns in a tree?") returned a *different* tight-but-lower band (`0.0017` vs `0.0024`), with totally different chunks. Tight score ranges on a homogeneous corpus aren't a bug; the formatter was. Generalisable principle: when validating a similarity-search surface, run a contrastive query early — the *delta* between an in-domain and out-of-domain query is much more informative than absolute score values.

@@ -145,3 +145,74 @@ The first deploy surfaced two classes of logging weakness:
 
 `retrieve` got a result-count log per query so the silent "0 results" case
 fails loudly.
+
+## Index task: 30+ minutes "Provisioning resources..." with no pipeline_id
+
+When the bundle ran end-to-end, the `index` task hung in `Provisioning resources…`
+state for over 30 minutes with `Pipeline id: -` on the index detail page. Our
+30-minute timeout in the polling loop never fired because the SDK was still
+blocked on `create_delta_sync_index_and_wait` — the polling loop is on the
+*other* side of that call.
+
+Three diagnostic dead-ends along the way before the actual cause surfaced:
+
+1. **Free Edition pipeline-slot exhaustion theory.** Plausible from the docs
+   ("one active pipeline per pipeline type"), but Jobs & Pipelines showed only
+   the user's `cv_pipeline` job — no internal Vector Search pipelines visible.
+   Inconclusive.
+2. **Source table prerequisites theory.** Verified `cv_silver_chunks` had
+   `delta.enableChangeDataFeed=true` (Details tab) and a PK constraint on
+   `chunk_uid` (Overview tab, the orange PK chip). Both fine.
+3. **`array<double>` vs `array<float>` theory.** The embedding column showed
+   as `array<double>` in Catalog Explorer and Vector Search docs say
+   `array<float>` is required. Looked like the smoking gun. Was wrong — the
+   index eventually came online with the existing `array<double>` column.
+
+**Actual cause**: just Free Edition's shared serverless infrastructure being
+slow at the initial provision step. The user cancelled the task at ~30 min,
+but the underlying Vector Search resource kept provisioning server-side
+(resources are independent of the Python process that requested them) and
+eventually transitioned to `Online` with all 12,013 rows synced. A subsequent
+manual re-run of the `index` task hit the "already exists" branches in
+`_ensure_endpoint`/`_ensure_index` and completed in under a minute.
+
+The `array<float>` cast got kept in `chunk.py` anyway — not load-bearing for
+Vector Search, but worth doing on its own merits: `databricks-gte-large-en` is
+a 32-bit model so the extra precision in `double` is illusory, and halving the
+column width saves ~50MB at this scale. Comment in the code reflects the
+honest reasoning.
+
+## Refactor: non-waiting create + unified polling
+
+Direct lesson from the above: `create_delta_sync_index_and_wait` is the wrong
+abstraction when you want a deadline you control. Switched to non-waiting
+`create_delta_sync_index`, which returns immediately. The caller's polling
+loop now owns the entire provisioning + sync window with a single 30-minute
+timeout. `_ensure_index` returns `(idx, is_new)` so the caller knows whether
+to fire an explicit `sync()` (existing index) or rely on creation's auto-sync
+(new index). One observable timeout instead of two opaque ones.
+
+## Retrieval validated end-to-end
+
+Built a quick notebook at `/Workspace/Users/jonnosgone@gmail.com/retrieval-demo`
+to exercise the index. Two gotchas worth knowing for future debugging:
+
+1. **`databricks-vectorsearch` isn't pre-installed on serverless.** Needs
+   `%pip install databricks-vectorsearch` + `dbutils.library.restartPython()`
+   before the import.
+2. **Score format hides variation.** Initial results showed every score as
+   `0.002` and looked broken — turned out to be the `f"{score:.3f}"` format
+   rounding away the actual variation. Switched to `:.6f` and saw the real
+   values: top-5 for "python data engineer with spark and aws experience"
+   landed in `[0.00225, 0.00246]`, while a contrastive query
+   ("unicorns in a tree?") landed in `[0.00171, 0.00174]` with a totally
+   different set of chunks. Real semantic discrimination, just on a tight
+   distance-style scale rather than the [0, 1] cosine convention I expected.
+
+The contrastive-query test is what definitively confirmed the embedding +
+retrieval surface is doing real work. Without the unicorns query, the
+narrow score range on the data-engineer query was ambiguous.
+
+The "Additional Information" / personal-trivia sections of CVs surface for
+the unicorns query — sensible, since those chunks are the parts of the
+corpus least connected to any concrete professional concept.
